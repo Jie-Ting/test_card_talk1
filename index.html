@@ -99,7 +99,7 @@
             aiText.innerText = "🤖 AI 正在分析中...";
             aiText.classList.remove('text-red-500');
 
-            const apiKey = ""; // 執行環境自動提供
+            const apiKey = "AIzaSyDCanIl68JrI9QD9YT-_oClpxovtjoW21c"; // 執行環境自動提供
             const userContent = selectedCards.map(c => c.text).join('、');
             const systemPrompt = `你是一位 AAC (輔助溝通) 專家。使用者輸入一組詞彙，請判斷缺少的主詞、動詞或受詞。回應格式固定為：缺少【XX】-->完整句子。總字數限制在 20 字以內。範例：輸入「餅乾」，回應「缺少【主詞】、【動詞】-->我吃餅乾」`;
 
