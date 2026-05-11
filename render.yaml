@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: gomoku-online
+    name: test_card
     env: node
     plan: free
     buildCommand: npm ci --omit=dev
