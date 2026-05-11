@@ -9,7 +9,20 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+        import { GoogleGenAI } from "@google/genai";
+        
+        // The client gets the API key from the environment variable `GEMINI_API_KEY`.
+        const ai = new GoogleGenAI({});
+        
+        async function main() {
+          const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: "Explain how AI works in a few words",
+          });
+          console.log(response.text);
+        }
+        
+        main();
         // Firebase 配置 - 優先使用環境變數
         const providedConfig = {
             apiKey: "AIzaSyB1d_9Phv2EhvishA7pm2QoLihm8sw6x2Y",
