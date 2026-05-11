@@ -10,8 +10,8 @@
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase 配置 (使用使用者提供的配置)
-        const firebaseConfig = {
+        // Firebase 配置 - 優先使用環境變數
+        const providedConfig = {
             apiKey: "AIzaSyB1d_9Phv2EhvishA7pm2QoLihm8sw6x2Y",
             authDomain: "testcard-7c32d.firebaseapp.com",
             projectId: "testcard-7c32d",
@@ -21,20 +21,11 @@
             measurementId: "G-3K3KXMFXT4"
         };
 
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : providedConfig;
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'aac-pro-system';
-
-        // 初始化認證狀態
-        const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else if (!auth.currentUser) {
-                await signInAnonymously(auth);
-            }
-        };
-        initAuth();
 
         // 狀態管理
         const synth = window.speechSynthesis;
@@ -42,10 +33,29 @@
         let userCustomCards = [];
         let longPressTimer = null;
         let cardToDelete = null;
+        let currentUser = null;
+
+        // 初始化認證狀態 (遵循 RULE 3 且處理 Token Mismatch)
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } catch (tokenError) {
+                        console.warn("Custom token failed, falling back to anonymous:", tokenError);
+                        await signInAnonymously(auth);
+                    }
+                } else if (!auth.currentUser) {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth init error:", error);
+            }
+        };
+        initAuth();
 
         // 預設系統字卡數據 (依照圖片排列)
         const baseSystemCards = [
-            // Row 1
             { text: "我", icon: "👧", cat: "c-yellow" },
             { text: "要", icon: "☀️", cat: "c-white" },
             { text: "不要", icon: "😌", cat: "c-white" },
@@ -55,7 +65,6 @@
             { text: "吃", icon: "👦🍱", cat: "c-white" },
             { text: "飯", icon: "🍚", cat: "c-purple" },
             { text: "不舒服", icon: "🤢", cat: "c-cyan" },
-            // Row 2
             { text: "你", icon: "👦", cat: "c-yellow" },
             { text: "是", icon: "⭕", cat: "c-white" },
             { text: "不是", icon: "❌", cat: "c-white" },
@@ -65,7 +74,6 @@
             { text: "喝", icon: "🥛", cat: "c-white" },
             { text: "麵", icon: "🍜", cat: "c-purple" },
             { text: "好痛", icon: "😫", cat: "c-cyan" },
-            // Row 3
             { text: "他", icon: "🧒", cat: "c-yellow" },
             { text: "會", icon: "💡", cat: "c-white" },
             { text: "不會", icon: "🤯", cat: "c-white" },
@@ -75,30 +83,25 @@
             { text: "跑", icon: "🏃", cat: "c-white" },
             { text: "餅乾", icon: "🍪", cat: "c-purple" },
             { text: "好癢", icon: "😖", cat: "c-cyan" },
-            // Row 4
             { text: "老師", icon: "👩‍🏫", cat: "c-yellow" },
             { text: "還要", icon: "☝️", cat: "c-white" },
             { text: "等一下", icon: "🖐️", cat: "c-white" },
             { text: "難過", icon: "😢", cat: "c-green" }
         ];
 
-        // --- AI 功能 ---
+        // --- AI 功能 (修正 API Key 與結構) ---
         window.analyzeSentence = async () => {
             if (selectedCards.length === 0) return;
             
             const aiArea = document.getElementById('aiSuggestionArea');
             const aiText = document.getElementById('aiSuggestionText');
             aiArea.classList.remove('hidden');
-            aiText.innerText = "🤖 AI 正在思考中...";
+            aiText.innerText = "🤖 AI 正在分析中...";
             aiText.classList.remove('text-red-500');
 
-            // --- 此處填入您的 Gemini API 金鑰 ---
-            const apiKey = "AIzaSyDCanIl68JrI9QD9YT-_oClpxovtjoW21c"; 
+            const apiKey = ""; // 執行環境自動提供
             const userContent = selectedCards.map(c => c.text).join('、');
-            const systemPrompt = `你是一位 AAC (輔助溝通) 專家。使用者輸入一組詞彙，請判斷缺少的主詞、動詞或受詞。
-            回應格式固定為：缺少【XX】-->完整句子。
-            總字數限制在 20 字以內。
-            範例：輸入「餅乾」，回應「缺少【主詞】、【動詞】-->我吃餅乾」`;
+            const systemPrompt = `你是一位 AAC (輔助溝通) 專家。使用者輸入一組詞彙，請判斷缺少的主詞、動詞或受詞。回應格式固定為：缺少【XX】-->完整句子。總字數限制在 20 字以內。範例：輸入「餅乾」，回應「缺少【主詞】、【動詞】-->我吃餅乾」`;
 
             const callGemini = async (retries = 0) => {
                 try {
@@ -110,18 +113,21 @@
                             systemInstruction: { parts: [{ text: systemPrompt }] }
                         })
                     });
+                    
+                    if (!response.ok) throw new Error('API連線失敗');
                     const data = await response.json();
                     const result = data.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (result) {
                         aiText.innerText = result.trim();
                     } else {
-                        throw new Error('No result');
+                        throw new Error('無法取得內容');
                     }
                 } catch (err) {
                     if (retries < 5) {
-                        setTimeout(() => callGemini(retries + 1), Math.pow(2, retries) * 1000);
+                        const delay = Math.pow(2, retries) * 1000;
+                        setTimeout(() => callGemini(retries + 1), delay);
                     } else {
-                        aiText.innerText = "🤖 AI 暫時無法連線。";
+                        aiText.innerText = "🤖 AI 分析暫時不可用。";
                         aiText.classList.add('text-red-500');
                     }
                 }
@@ -155,13 +161,14 @@
         const updateSentenceUI = () => {
             const container = document.getElementById('sentenceBox');
             const aiArea = document.getElementById('aiSuggestionArea');
+            if (!container) return;
             container.innerHTML = '';
-            aiArea.classList.add('hidden'); // 每次變動句子即隱藏建議
+            aiArea.classList.add('hidden');
 
             selectedCards.forEach(card => {
                 const div = document.createElement('div');
                 div.className = 'min-w-[70px] h-[90px] bg-white border-2 border-black rounded-xl flex flex-col items-center justify-center p-1 flex-shrink-0 animate-pop';
-                div.innerHTML = `<div class="text-3xl">${card.icon}</div><div class="text-xs font-bold mt-1">${card.text}</div>`;
+                div.innerHTML = `<div class="text-3xl">${card.icon}</div><div class="text-xs font-bold mt-1 text-center">${card.text}</div>`;
                 container.appendChild(div);
             });
         };
@@ -189,21 +196,23 @@
         window.closeAddModal = () => document.getElementById('addCardModal').style.display = 'none';
 
         window.saveCustomCard = async () => {
+            if (!currentUser || currentUser.isAnonymous) return alert("請先登入帳號");
             const text = document.getElementById('inputName').value;
             const icon = document.getElementById('inputIcon').value;
             const cat = document.getElementById('inputCat').value;
 
-            if (!text || !icon || !auth.currentUser || auth.currentUser.isAnonymous) return alert("請先登入帳號");
+            if (!text || !icon) return alert("請填寫內容");
             if (userCustomCards.length + baseSystemCards.length >= 36) return alert("溝通板已滿！");
 
             try {
-                const colRef = collection(db, 'artifacts', appId, 'users', auth.currentUser.uid, 'customCards');
+                const colRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'customCards');
                 const newDoc = doc(colRef);
                 await setDoc(newDoc, { text, icon, cat, id: newDoc.id, createdAt: Date.now() });
                 window.closeAddModal();
                 document.getElementById('inputName').value = '';
                 document.getElementById('inputIcon').value = '';
             } catch (e) {
+                console.error("Save error:", e);
                 alert("儲存失敗: " + e.message);
             }
         };
@@ -220,10 +229,10 @@
         };
 
         window.deleteCardExec = async () => {
-            if (!cardToDelete || !auth.currentUser) return;
+            if (!cardToDelete || !currentUser || currentUser.isAnonymous) return;
             try {
                 if (cardToDelete.id) {
-                    const docRef = doc(db, 'artifacts', appId, 'users', auth.currentUser.uid, 'customCards', cardToDelete.id);
+                    const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'customCards', cardToDelete.id);
                     await deleteDoc(docRef);
                 }
                 window.closeDeleteModal();
@@ -235,27 +244,24 @@
         // --- 網格渲染 ---
         const renderGrid = () => {
             const grid = document.getElementById('boardGrid');
+            if (!grid) return;
             grid.innerHTML = '';
             let board = new Array(40).fill(null);
 
-            // 固定功能鍵 (第 10 欄)
             board[9] = { text: "添加", icon: "➕", cat: "c-func", type: "action", action: window.openAddModal };
-            board[19] = { text: "告狀", icon: "☝️👩‍🏫", cat: "c-func", type: "action", action: () => window.speak("老師，我要告狀！有人弄我。") };
-            board[29] = { text: "幫忙", icon: "🤝❤️", cat: "c-func", type: "action", action: () => window.speak("請幫幫我，謝謝。") };
+            board[19] = { text: "告狀", icon: "☝️👩‍🏫", cat: "c-func", type: "action", action: () => window.speak("老師，我要告狀！") };
+            board[29] = { text: "幫忙", icon: "🤝❤️", cat: "c-func", type: "action", action: () => window.speak("請幫幫我。") };
             board[39] = { text: "重設", icon: "⚙️", cat: "c-reset", type: "action", action: () => { window.clearSentence(); window.speak("重設系統"); } };
 
-            // 填充系統卡片
             let sysPtr = 0;
             for(let i=0; i<40; i++) if(!board[i] && sysPtr < baseSystemCards.length) board[i] = baseSystemCards[sysPtr++];
-
-            // 填充自定義卡片
             let custPtr = 0;
             for(let i=0; i<40; i++) if(!board[i] && custPtr < userCustomCards.length) board[i] = userCustomCards[custPtr++];
 
             board.forEach((item, idx) => {
                 const div = document.createElement('div');
                 if (!item) {
-                    div.className = 'border-2 border-dashed border-gray-200 rounded-2xl opacity-30';
+                    div.className = 'border-2 border-dashed border-gray-200 rounded-2xl opacity-20';
                     grid.appendChild(div);
                     return;
                 }
@@ -274,7 +280,6 @@
                     item.type === "action" ? item.action() : window.addToSentence(item);
                 };
 
-                // 長按邏輯
                 if (canDelete && item.text !== "重設") {
                     div.onpointerdown = () => {
                         div.dataset.longPressed = "false";
@@ -286,7 +291,6 @@
                     div.onpointerup = () => clearTimeout(longPressTimer);
                     div.onpointerleave = () => clearTimeout(longPressTimer);
                 }
-
                 grid.appendChild(div);
             });
         };
@@ -295,14 +299,20 @@
         onAuthStateChanged(auth, (user) => {
             const loginLayer = document.getElementById('loginOverlay');
             const mainApp = document.getElementById('appContent');
+            currentUser = user;
+
             if (user && !user.isAnonymous) {
                 loginLayer.classList.add('hidden');
                 mainApp.classList.remove('hidden');
-                document.getElementById('userBadge').innerText = user.email.charAt(0).toUpperCase();
+                document.getElementById('userBadge').innerText = user.email ? user.email.charAt(0).toUpperCase() : 'U';
 
+                // 只有已認證且非匿名時，才監聽個人資料
                 const q = collection(db, 'artifacts', appId, 'users', user.uid, 'customCards');
                 onSnapshot(q, (snap) => {
                     userCustomCards = snap.docs.map(d => d.data());
+                    renderGrid();
+                }, (err) => {
+                    console.error("Firestore error:", err);
                     renderGrid();
                 });
             } else {
@@ -314,17 +324,16 @@
 
     </script>
     <style>
-        @keyframes pop { 0% { transform: scale(0.8); } 100% { transform: scale(1); } }
+        @keyframes pop { 0% { transform: scale(0.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
         .animate-pop { animation: pop 0.2s ease-out; }
-        body { background-color: #fefce8; font-family: "Microsoft JhengHei", sans-serif; user-select: none; overflow: hidden; }
+        body { background-color: #fefce8; font-family: "Microsoft JhengHei", sans-serif; user-select: none; overflow: hidden; height: 100vh; }
         .sentence-bar { background-color: #f3f4e9; border: 3px solid #6b7280; border-radius: 30px; height: 130px; display: flex; align-items: center; padding: 0 15px; gap: 10px; flex-grow: 1; overflow-x: auto; box-shadow: inset 2px 2px 5px rgba(0,0,0,0.05); }
-        .aac-grid { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; padding: 15px; height: calc(100vh - 210px); }
+        .aac-grid { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; padding: 15px; height: calc(100vh - 220px); }
         .card { background: white; border: 2px solid #000; border-radius: 18px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 6px; cursor: pointer; box-shadow: 2px 2px 0px #000; transition: transform 0.1s; touch-action: none; }
         .card:active { transform: translate(2px, 2px); box-shadow: none; }
         .card-label { font-weight: 800; font-size: 0.85rem; pointer-events: none; }
         .card-icon { font-size: 2.2rem; flex-grow: 1; display: flex; align-items: center; pointer-events: none; }
         
-        /* 分類色彩 */
         .c-yellow { background-color: #fef3c7; }
         .c-white { background-color: #ffffff; }
         .c-green { background-color: #ecfdf5; }
@@ -344,22 +353,20 @@
         <div class="bg-white p-10 rounded-[40px] shadow-2xl border-4 border-blue-200 w-[400px] text-center">
             <p class="text-gray-500 font-bold mb-8">請選擇使用者進入</p>
             <div class="space-y-4">
-                <button id="btnA" onclick="login('user1@test.com', 'password123', 'btnA')" class="w-full bg-blue-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-blue-600 transition-all">使用者 A (User 1)</button>
-                <button id="btnB" onclick="login('user2@test.com', 'password123', 'btnB')" class="w-full bg-green-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-green-600 transition-all">使用者 B (User 2)</button>
+                <button id="btnA" onclick="login('user1@test.com', 'password123', 'btnA')" class="w-full bg-blue-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-blue-600">使用者 A (User 1)</button>
+                <button id="btnB" onclick="login('user2@test.com', 'password123', 'btnB')" class="w-full bg-green-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-green-600">使用者 B (User 2)</button>
             </div>
-            <p class="mt-8 text-xs text-gray-300 italic">長按 4-9 欄字卡可刪除 / 點擊機器人進行 AI 分析</p>
+            <p class="mt-8 text-xs text-gray-400 italic">長按 4-9 欄字卡可刪除 / 點擊機器人進行分析</p>
         </div>
     </div>
 
-    <!-- 主應用內容 -->
+    <!-- 主內容區 -->
     <div id="appContent" class="hidden">
-        <div class="flex items-start gap-4 mb-3 max-w-[1400px] mx-auto">
-            <!-- 機器人 AI 按鈕 -->
+        <div class="flex items-start gap-4 mb-4 max-w-[1400px] mx-auto">
             <button onclick="analyzeSentence()" class="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center border-4 border-blue-400 text-5xl shadow-md hover:scale-105 active:scale-95 transition-transform">🤖</button>
             
             <div class="flex flex-col flex-grow">
                 <div class="sentence-bar" id="sentenceBox"></div>
-                <!-- AI 建議提示 -->
                 <div id="aiSuggestionArea" class="hidden mt-2 px-5 py-2 bg-blue-50 border-2 border-blue-200 rounded-2xl flex items-center gap-3">
                     <span class="text-blue-600 font-black">AI 建議:</span>
                     <span id="aiSuggestionText" class="text-gray-700 font-bold italic"></span>
@@ -373,52 +380,41 @@
                 <button onclick="logout()" class="w-12 h-12 bg-gray-400 text-white rounded-full flex items-center justify-center text-[10px] shadow-md">登出</button>
             </div>
         </div>
-
         <div id="boardGrid" class="aac-grid"></div>
     </div>
 
-    <!-- 添加字卡彈窗 -->
+    <!-- 添加彈窗 -->
     <div id="addCardModal" class="modal-overlay">
         <div class="bg-white p-8 rounded-[35px] border-4 border-yellow-400 w-[420px] shadow-2xl">
             <h2 class="text-2xl font-black mb-6 text-center text-yellow-600">✨ 添加新字卡</h2>
             <div class="space-y-4">
-                <div>
-                    <label class="block text-xs font-bold text-gray-400 ml-2 mb-1">名稱</label>
-                    <input type="text" id="inputName" placeholder="例如: 蘋果" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none focus:border-yellow-400 transition-colors">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-gray-400 ml-2 mb-1">圖示 (Emoji)</label>
-                    <input type="text" id="inputIcon" placeholder="點擊選擇 Emoji 🍎" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none focus:border-yellow-400 transition-colors">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-gray-400 ml-2 mb-1">類別</label>
-                    <select id="inputCat" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none focus:border-yellow-400 transition-colors">
-                        <option value="c-yellow">人物 (黃色)</option>
-                        <option value="c-white">動作 (白色)</option>
-                        <option value="c-green">感覺 (綠色)</option>
-                        <option value="c-purple">物品 (紫色)</option>
-                        <option value="c-cyan">狀態 (青色)</option>
-                    </select>
-                </div>
+                <input type="text" id="inputName" placeholder="名稱" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none">
+                <input type="text" id="inputIcon" placeholder="Emoji 🍎" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none">
+                <select id="inputCat" class="w-full border-2 border-gray-100 p-3 rounded-2xl outline-none">
+                    <option value="c-yellow">人物 (黃色)</option>
+                    <option value="c-white">動作 (白色)</option>
+                    <option value="c-green">感覺 (綠色)</option>
+                    <option value="c-purple">物品 (紫色)</option>
+                    <option value="c-cyan">狀態 (青色)</option>
+                </select>
                 <div class="flex gap-3 pt-4">
-                    <button onclick="closeAddModal()" class="flex-1 py-4 bg-gray-100 rounded-2xl font-bold text-gray-500">取消</button>
-                    <button onclick="saveCustomCard()" class="flex-1 py-4 bg-yellow-400 text-white rounded-2xl font-black shadow-lg">確認添加</button>
+                    <button onclick="closeAddModal()" class="flex-1 py-4 bg-gray-100 rounded-2xl font-bold">取消</button>
+                    <button onclick="saveCustomCard()" class="flex-1 py-4 bg-yellow-400 text-white rounded-2xl font-black">確認</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- 刪除確認彈窗 -->
+    <!-- 刪除確認 -->
     <div id="deleteModal" class="modal-overlay">
         <div class="bg-white p-8 rounded-[30px] border-4 border-red-500 w-[350px] text-center shadow-2xl">
-            <h3 class="text-xl font-black text-red-600 mb-2">要刪除這張字卡嗎？</h3>
+            <h3 class="text-xl font-black text-red-600 mb-2">確定刪除嗎？</h3>
             <div id="deleteTargetName" class="text-3xl font-bold mb-8"></div>
             <div class="flex gap-3">
                 <button onclick="closeDeleteModal()" class="flex-1 py-3 bg-gray-100 rounded-xl font-bold">保留</button>
-                <button onclick="deleteCardExec()" class="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold shadow-md">確定刪除</button>
+                <button onclick="deleteCardExec()" class="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold">刪除</button>
             </div>
         </div>
     </div>
-
 </body>
 </html>
