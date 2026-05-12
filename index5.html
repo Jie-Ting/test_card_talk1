@@ -298,13 +298,13 @@
             document.querySelectorAll('input').forEach(i => i.value = '');
         };
 
-        // AI 分析功能
+        // AI 語句結構分析功能 (最新主、動、受分析邏輯)
         window.analyzeAI = async () => {
             if(selectedSentence.length === 0) return;
             const aiArea = document.getElementById('aiArea');
             const aiResult = document.getElementById('aiResult');
             if (aiArea) aiArea.classList.remove('hidden');
-            if (aiResult) aiResult.innerText = "分析中...";
+            if (aiResult) aiResult.innerText = "正在分析句子成分中...";
 
             const userText = selectedSentence.map(i => i.text).join('、');
             const apiKey = ""; 
@@ -315,13 +315,16 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         contents: [{ parts: [{ text: `輸入詞彙：${userText}` }] }],
-                        systemInstruction: { parts: [{ text: "你是一位 AAC 專家。請分析詞彙並補足語法。格式：缺少【XX】-->完整句子。限20字內。" }] }
+                        systemInstruction: { parts: [{ text: "你是一位 AAC (輔助溝通) 專家。請分析使用者輸入的詞彙，判斷其在句子中缺少的成分（主詞、動詞、受詞）。請嚴格遵守以下格式：\n【分析】: 說明缺少了什麼成分，目前只有什麼。如果輸入詞彙可以有多種身分（例如既是主詞也是受詞），請一併說明。\n【完整句子】: 根據分析提供完整的例句。如果輸入詞彙有多種身分，請分別提供例句（例如：主詞：爸爸喝咖啡，受詞：我想爸爸）。限制在 60 字以內。" }] }
                     })
                 });
                 const data = await response.json();
-                if (aiResult) aiResult.innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || "無法分析。";
+                if (aiResult) {
+                    const resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || "無法分析語法結構。";
+                    aiResult.innerText = resultText;
+                }
             } catch (err) {
-                if (aiResult) aiResult.innerText = "服務暫時不可用。";
+                if (aiResult) aiResult.innerText = "服務暫時不可用，請稍後再試。";
             }
         };
 
@@ -417,8 +420,9 @@
             <button onclick="window.analyzeAI()" class="w-32 h-32 bg-blue-100 rounded-full border-4 border-blue-400 text-7xl shadow-xl flex items-center justify-center hover:bg-blue-200 transition-colors">🤖</button>
             <div class="flex-grow flex flex-col">
                 <div id="sentenceBox" class="sentence-bar no-scrollbar"></div>
-                <div id="aiArea" class="hidden mt-2 p-2 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 font-bold italic animate-pop">
-                    建議：<span id="aiResult"></span>
+                <div id="aiArea" class="hidden mt-2 p-3 bg-blue-50 border-2 border-blue-200 rounded-2xl text-blue-900 animate-pop">
+                    <p class="font-black text-sm mb-1">🤖 AI 句子成分分析：</p>
+                    <div id="aiResult" class="text-sm font-bold italic leading-relaxed whitespace-pre-wrap"></div>
                 </div>
             </div>
             <div class="flex flex-col gap-4">
