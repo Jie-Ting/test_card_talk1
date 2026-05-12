@@ -204,7 +204,7 @@
             board[9] = { text:"添加", icon:"➕", type:"act", action: () => window.switchView('categoryView') };
             board[19] = { text:"告狀", icon:"☝️👩‍🏫", type:"act", action: () => window.speak("老師，我要告狀！") };
             board[29] = { text:"幫忙", icon:"🤝❤️", type:"act", action: () => window.speak("請幫幫我。") };
-            board[39] = { text:"重設", icon:"⚙️", color: "#fce7f3", type:"act", action: () => { selectedSentence = []; renderSentence(); window.speak("重設系統"); } };
+            board[39] = { text:"重設", icon:"⚙️", color: "#fce7f3", type:"act", action: () => { window.clearSentence(); window.speak("重設系統"); } };
 
             let currentCol = 3; 
             let currentRow = 0;
@@ -260,6 +260,24 @@
                 div.innerHTML = `${iconHtml}<div class="text-xs font-bold mt-1">${item.text}</div>`;
                 box.appendChild(div);
             });
+        };
+
+        // --- 字卡操作功能 ---
+        window.removeLastCard = () => {
+            selectedSentence.pop();
+            renderSentence();
+            // 清空 AI 分析建議
+            const aiArea = document.getElementById('aiArea');
+            if (aiArea) aiArea.classList.add('hidden');
+        };
+
+        window.clearSentence = () => {
+            selectedSentence = [];
+            renderSentence();
+            // 清空 AI 分析建議
+            const aiArea = document.getElementById('aiArea');
+            if (aiArea) aiArea.classList.add('hidden');
+            window.speak("清空");
         };
 
         // --- 存取邏輯 ---
@@ -416,21 +434,41 @@
 
     <!-- 主溝通板頁 -->
     <div id="boardView" class="view-screen hidden">
-        <div class="flex w-full gap-8 mb-8 max-w-[1400px] items-center">
-            <button onclick="window.analyzeAI()" class="w-32 h-32 bg-blue-100 rounded-full border-4 border-blue-400 text-7xl shadow-xl flex items-center justify-center hover:bg-blue-200 transition-colors">🤖</button>
+        <div class="flex w-full gap-8 mb-8 max-w-[1400px] items-center relative">
+            <!-- AI 機器人 -->
+            <button onclick="window.analyzeAI()" class="w-28 h-28 bg-blue-100 rounded-full border-4 border-blue-400 text-6xl shadow-xl flex items-center justify-center hover:bg-blue-200 transition-colors">🤖</button>
+            
             <div class="flex-grow flex flex-col">
-                <div id="sentenceBox" class="sentence-bar no-scrollbar"></div>
+                <!-- 語句顯示列 -->
+                <div class="relative flex items-center">
+                    <div id="sentenceBox" class="sentence-bar no-scrollbar pr-24"></div>
+                    
+                    <!-- 功能按鈕群 (參考截圖佈局) -->
+                    <div class="absolute right-6 flex flex-col items-center gap-2">
+                        <!-- 刪除單個 X -->
+                        <button onclick="window.removeLastCard()" class="w-12 h-12 bg-red-500 text-white rounded-full text-3xl font-black flex items-center justify-center shadow-lg active:scale-90 border-2 border-white">✕</button>
+                        
+                        <div class="flex gap-2">
+                            <!-- 發聲按鈕 -->
+                            <button onclick="window.speak(selectedSentence.map(i=>i.text).join(''))" class="w-10 h-10 flex items-center justify-center text-4xl hover:scale-110 active:scale-90 transition-transform">🗣️</button>
+                            <!-- 垃圾桶按鈕 (清空全部) -->
+                            <button onclick="window.clearSentence()" class="w-10 h-10 flex items-center justify-center text-3xl hover:scale-110 active:scale-90 transition-transform grayscale">🗑️</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI 分析結果區域 -->
                 <div id="aiArea" class="hidden mt-2 p-3 bg-blue-50 border-2 border-blue-200 rounded-2xl text-blue-900 animate-pop">
                     <p class="font-black text-sm mb-1">🤖 AI 句子成分分析：</p>
                     <div id="aiResult" class="text-sm font-bold italic leading-relaxed whitespace-pre-wrap"></div>
                 </div>
             </div>
-            <div class="flex flex-col gap-4">
-                <button onclick="selectedSentence.pop(); renderSentence();" class="w-16 h-16 bg-red-500 text-white rounded-3xl text-4xl font-black flex items-center justify-center shadow-lg active:scale-90">✕</button>
-                <button onclick="window.speak(selectedSentence.map(i=>i.text).join(''))" class="w-16 h-16 bg-orange-400 text-white rounded-3xl text-4xl flex items-center justify-center shadow-lg active:scale-90">📢</button>
-            </div>
         </div>
+        
+        <!-- 溝通字卡網格 -->
         <div id="boardGrid" class="grid-10x4 px-6 max-w-[1400px]"></div>
+        
+        <!-- 返回首頁按鈕 -->
         <div class="home-btn" onclick="switchView('categoryView')">🏠</div>
     </div>
 
