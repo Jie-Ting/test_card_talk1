@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AAC 專業溝通板系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const providedConfig = {
+            apiKey: "AIzaSyB1d_9Phv2EhvishA7pm2QoLihm8sw6x2Y",
+            authDomain: "testcard-7c32d.firebaseapp.com",
+            projectId: "testcard-7c32d",
+            storageBucket: "testcard-7c32d.firebasestorage.app",
+            messagingSenderId: "457469361983",
+            appId: "1:457469361983:web:d61b6b5d8ece4d235add8a",
+            measurementId: "G-3K3KXMFXT4"
+        };
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : providedConfig;
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'aac-pro-v2';
+
+        const synth = window.speechSynthesis;
+        let currentUser = null;
+        let allCategories = [];
+        let selectedCategoryIds = [];
+        let currentEditingCategory = null;
+        let editingCatCards = [];
+        let longPressTimer = null;
+        let selectedSentence = [];
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try { await signInWithCustomToken(auth, __initial_auth_token); } catch (e) { await signInAnonymously(auth); }
+                } else if (!auth.currentUser) { await signInAnonymously(auth); }
+            } catch (e) { console.error("Auth init error"); }
+        };
+        initAuth();
+
+        window.switchView = (viewId) => {
+            document.querySelectorAll('.view-screen').forEach(v => v.classList.add('hidden'));
+            document.getElementById(viewId).classList.remove('hidden');
+            if(viewId === 'boardView') renderMainBoard();
+            if(viewId === 'categoryView') renderCategories();
+        };
+
+        const renderCategories = () => {
+            const container = document.getElementById('categoryGrid');
+            container.innerHTML = '';
+            
+            allCategories.forEach(cat => {
+                const isSelected = selectedCategoryIds.includes(cat.id);
+                const div = document.createElement('div');
+                div.className = `cat-card ${isSelected ? 'ring-4 ring-blue-400 scale-105' : ''}`;
+                div.style.backgroundColor = cat.color || '#fff';
+                div.innerHTML = `<div class="text-xl font-black mb-2">${cat.name}</div><div class="text-5xl">${cat.icon}</div>`;
+                
+                // 短按挑選，長按編輯
+                div.onpointerdown = (e) => {
+                    div.dataset.longPressed = "false";
+                    longPressTimer = setTimeout(() => {
+                        div.dataset.longPressed = "true";
+                        openEditCategory(cat);
+                    }, 700);
+                };
+                div.onpointerup = () => {
+                    clearTimeout(longPressTimer);
+                    if(div.dataset.longPressed !== "true") toggleCategory(cat.id);
+                };
+                container.appendChild(div);
+            });
+
+            // 新增類別按鈕
+            const addBtn = document.createElement('div');
+            addBtn.className = "cat-card border-4 border-dashed border-gray-400 bg-white flex flex-col items-center justify-center";
+            addBtn.innerHTML = `<div class="w-16 h-16 bg-yellow-400 rounded-full flex items-center justify-center text-4xl text-white mb-2 shadow-lg">+</div><div class="font-bold">新增類別</div>`;
+            addBtn.onclick = () => openAddCategoryModal();
+            container.appendChild(addBtn);
+
+            renderSelectedBar();
+        };
+
+        const toggleCategory = (id) => {
+            const idx = selectedCategoryIds.indexOf(id);
+            if(idx > -1) selectedCategoryIds.splice(idx, 1);
+            else selectedCategoryIds.push(id);
+            renderCategories();
+        };
+
+        const renderSelectedBar = () => {
+            const bar = document.getElementById('selectedBar');
+            bar.innerHTML = '';
+            selectedCategoryIds.forEach(id => {
+                const cat = allCategories.find(c => c.id === id);
+                if(!cat) return;
+                const div = document.createElement('div');
+                div.className = "h-20 px-6 bg-white border-2 border-black rounded-2xl flex items-center gap-3 cursor-pointer hover:bg-red-50";
+                div.innerHTML = `<span class="text-3xl">${cat.icon}</span><span class="font-bold">${cat.name}</span>`;
+                div.onclick = () => toggleCategory(id);
+                bar.appendChild(div);
+            });
+        };
+
+        const openEditCategory = (cat) => {
+            currentEditingCategory = cat;
+            window.switchView('editCategoryView');
+            document.getElementById('editCatHeader').innerHTML = `
+                <div class="p-4 rounded-2xl border-2 border-black shadow-md inline-block" style="background-color:${cat.color}">
+                    <div class="font-bold">${cat.name}</div>
+                    <div class="text-4xl">${cat.icon}</div>
+                </div>
+            `;
+            
+            // 監聽該類別下的字卡
+            const q = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', cat.id, 'cards');
+            onSnapshot(q, (snap) => {
+                editingCatCards = snap.docs.map(d => ({...d.data(), id: d.id}));
+                renderEditCards();
+            });
+        };
+
+        const renderEditCards = () => {
+            const grid = document.getElementById('editCardsGrid');
+            grid.innerHTML = '';
+            editingCatCards.forEach(card => {
+                const div = document.createElement('div');
+                div.className = "edit-card";
+                div.style.backgroundColor = currentEditingCategory.color;
+                div.innerHTML = `<div class="font-bold mb-1">${card.text}</div><div class="text-4xl">${card.icon}</div>`;
+                div.onclick = () => confirmDeleteCard(card);
+                grid.appendChild(div);
+            });
+
+            // 新增字卡按鈕
+            const addBtn = document.createElement('div');
+            addBtn.className = "edit-card border-2 border-dashed border-gray-400 bg-white flex flex-col items-center justify-center";
+            addBtn.innerHTML = `<div class="w-12 h-12 bg-yellow-400 rounded-full flex items-center justify-center text-2xl text-white mb-1">+</div><div class="text-xs font-bold text-center">新增字卡</div>`;
+            addBtn.onclick = () => openAddCardModal();
+            grid.appendChild(addBtn);
+        };
+
+        const renderMainBoard = () => {
+            const grid = document.getElementById('boardGrid');
+            grid.innerHTML = '';
+            let board = new Array(40).fill(null);
+
+            // 1~3 欄固定系統卡
+            const col1_3 = [
+                {text:"我", icon:"👧", cat:"sys"}, {text:"要", icon:"☀️", cat:"sys"}, {text:"不要", icon:"😌", cat:"sys"},
+                {text:"你", icon:"👦", cat:"sys"}, {text:"是", icon:"⭕", cat:"sys"}, {text:"不是", icon:"❌", cat:"sys"},
+                {text:"他", icon:"🧒", cat:"sys"}, {text:"會", icon:"💡", cat:"sys"}, {text:"不會", icon:"🤯", cat:"sys"},
+                {text:"老師", icon:"👩‍🏫", cat:"sys"}, {text:"還要", icon:"☝️", cat:"sys"}, {text:"等一下", icon:"🖐️", cat:"sys"}
+            ];
+            
+            let sysPtr = 0;
+            for(let row=0; row<4; row++) {
+                for(let col=0; col<3; col++) {
+                    board[row * 10 + col] = col1_3[sysPtr++];
+                }
+            }
+
+            // 10 欄功能鍵
+            board[9] = { text: "添加", icon: "➕", type: "action", action: () => openAddCategoryModal() };
+            board[19] = { text: "告狀", icon: "☝️👩‍🏫", type: "action", action: () => window.speak("老師，我要告狀！") };
+            board[29] = { text: "幫忙", icon: "🤝❤️", type: "action", action: () => window.speak("請幫幫我。") };
+            board[39] = { text: "重設", icon: "⚙️", type: "action", action: () => { selectedSentence = []; renderSentence(); window.speak("系統重設"); } };
+
+            // 4~9 欄：填入挑選類別的所有字卡
+            let selectedPool = [];
+            selectedCategoryIds.forEach(id => {
+                // 這裡我們需要一個同步機制。在現實應用中，我們會預先加載所有選定類別的字卡。
+                // 簡化起見，假設 allCategoryCards 已經快取。
+            });
+            
+            // 非同步獲取所有選定類別的字卡並填入
+            fetchBoardCards().then(cards => {
+                let cardPtr = 0;
+                for(let row=0; row<4; row++) {
+                    for(let col=3; col<9; col++) {
+                        if(cardPtr < cards.length) board[row * 10 + col] = cards[cardPtr++];
+                    }
+                }
+                drawBoardCells(board);
+            });
+        };
+
+        const fetchBoardCards = async () => {
+            let pool = [];
+            for(let catId of selectedCategoryIds) {
+                const q = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', catId, 'cards');
+                const snap = await window.fbGetDocs(q); // 這裡需引用 getDocs
+                snap.forEach(doc => pool.push({...doc.data(), color: allCategories.find(c=>c.id===catId).color}));
+            }
+            return pool;
+        };
+
+        const drawBoardCells = (board) => {
+            const grid = document.getElementById('boardGrid');
+            grid.innerHTML = '';
+            board.forEach((item, idx) => {
+                const div = document.createElement('div');
+                if(!item) {
+                    div.className = 'border-2 border-dashed border-gray-200 rounded-2xl opacity-20';
+                } else {
+                    div.className = `card-item border-2 border-black rounded-2xl flex flex-col items-center justify-between p-2 cursor-pointer shadow-md`;
+                    div.style.backgroundColor = item.color || '#fff';
+                    div.innerHTML = `<div class="font-black text-sm">${item.text}</div><div class="text-4xl flex-grow flex items-center">${item.icon}</div>`;
+                    div.onclick = () => {
+                        if(item.type === 'action') item.action();
+                        else addToSentence(item);
+                    };
+                }
+                grid.appendChild(div);
+            });
+        };
+
+        const renderSentence = () => {
+            const box = document.getElementById('sentenceBox');
+            box.innerHTML = '';
+            selectedSentence.forEach(item => {
+                const div = document.createElement('div');
+                div.className = "w-16 h-20 bg-white border-2 border-black rounded-xl flex flex-col items-center justify-center shadow-sm";
+                div.innerHTML = `<div class="text-2xl">${item.icon}</div><div class="text-[10px] font-bold">${item.text}</div>`;
+                box.appendChild(div);
+            });
+        };
+
+        window.addToSentence = (item) => {
+            if(selectedSentence.length < 5) {
+                selectedSentence.push(item);
+                window.speak(item.text);
+                renderSentence();
+            }
+        };
+
+        window.speak = (text) => {
+            if (synth.speaking) synth.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = 'zh-TW';
+            synth.speak(u);
+        };
+
+        window.analyzeAI = async () => {
+            if(selectedSentence.length === 0) return;
+            const text = selectedSentence.map(i => i.text).join('');
+            const apiKey = "AIzaSyDCanIl68JrI9QD9YT-_oClpxovtjoW21c";
+            const systemPrompt = "你是一位 AAC 專家。分析提供的詞彙，判斷缺少的主詞、動詞或受詞。格式：缺少【XX】-->完整句子。20字內。";
+            
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: `輸入：${text}` }] }],
+                        systemInstruction: { parts: [{ text: systemPrompt }] }
+                    })
+                });
+                const data = await res.json();
+                document.getElementById('aiResult').innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || "分析失敗";
+                document.getElementById('aiResultArea').classList.remove('hidden');
+            } catch (e) { console.error("AI Error"); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user && !user.isAnonymous) {
+                window.switchView('categoryView');
+                
+                // 監聽類別列表
+                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'categories');
+                onSnapshot(q, (snap) => {
+                    allCategories = snap.docs.map(d => ({...d.data(), id: d.id}));
+                    if(allCategories.length === 0) initDefaultCategories();
+                    renderCategories();
+                });
+            } else {
+                window.switchView('loginView');
+            }
+        });
+
+        const initDefaultCategories = async () => {
+            const defaults = [
+                {
+                    name: "情緒", icon: "😊", color: "#ecfdf5",
+                    cards: [
+                        { text: "開心", icon: "😊" },
+                        { text: "生氣", icon: "😡" },
+                        { text: "難過", icon: "😢" }
+                    ]
+                },
+                {
+                    name: "家人", icon: "👨‍👩‍👧", color: "#eff6ff",
+                    cards: [
+                        { text: "爸爸", icon: "👨‍🏫" },
+                        { text: "媽媽", icon: "👩" },
+                        { text: "奶奶", icon: "👵" }
+                    ]
+                },
+                {
+                    name: "動作", icon: "🏃", color: "#fff7ed",
+                    cards: [
+                        { text: "吃", icon: "👦🍱" },
+                        { text: "喝", icon: "🥛" },
+                        { text: "跑", icon: "🏃" }
+                    ]
+                },
+                {
+                    name: "食物", icon: "🍱", color: "#fefce8",
+                    cards: [
+                        { text: "飯", icon: "🍚" },
+                        { text: "麵", icon: "🍜" },
+                        { text: "餅乾", icon: "🍪" }
+                    ]
+                }
+            ];
+
+            for (let d of defaults) {
+                const catRef = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories'));
+                await setDoc(catRef, { name: d.name, icon: d.icon, color: d.color, id: catRef.id });
+                
+                // 為每個類別新增初始字卡
+                for (let c of d.cards) {
+                    const cardRef = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', catRef.id, 'cards'));
+                    await setDoc(cardRef, { ...c, id: cardRef.id });
+                }
+            }
+        };
+
+        // Firebase 封裝供非模組環境使用
+        window.fbGetDocs = async (q) => {
+            const { getDocs } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+            return await getDocs(q);
+        };
+        
+        window.login = async (email, password, btnId) => {
+            const btn = document.getElementById(btnId);
+            btn.disabled = true; btn.innerText = "驗證中...";
+            try { await signInWithEmailAndPassword(auth, email, password); }
+            catch (e) { alert("登入失敗"); btn.disabled = false; btn.innerText = "重新登入"; }
+        };
+
+        window.addCategory = async () => {
+            const name = document.getElementById('newCatName').value;
+            const icon = document.getElementById('newCatIcon').value;
+            const color = document.getElementById('newCatColor').value;
+            if(!name || !icon) return;
+            const ref = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories'));
+            await setDoc(ref, { name, icon, color, id: ref.id });
+            closeModal('addCatModal');
+        };
+
+        window.addCardToCat = async () => {
+            const text = document.getElementById('newCardName').value;
+            const icon = document.getElementById('newCardIcon').value;
+            if(!text || !icon) return;
+            const ref = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', currentEditingCategory.id, 'cards'));
+            await setDoc(ref, { text, icon, id: ref.id });
+            closeModal('addCardModal');
+        };
+
+        window.openAddCategoryModal = () => document.getElementById('addCatModal').style.display='flex';
+        window.openAddCardModal = () => document.getElementById('addCardModal').style.display='flex';
+        window.closeModal = (id) => document.getElementById(id).style.display='none';
+    </script>
+    <style>
+        body { background-color: #fefce8; font-family: "Microsoft JhengHei", sans-serif; user-select: none; overflow: hidden; height: 100vh; }
+        .cat-card { width: 180px; height: 220px; border: 3px solid #000; border-radius: 30px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; box-shadow: 4px 4px 0px #000; touch-action: none; }
+        .edit-card { width: 100px; height: 130px; border: 2px solid #000; border-radius: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; box-shadow: 2px 2px 0px #000; }
+        .card-item { height: 100%; transition: transform 0.1s; }
+        .card-item:active { transform: scale(0.95); }
+        .sentence-bar { background-color: #f3f4e9; border: 4px solid #6b7280; border-radius: 30px; height: 140px; display: flex; align-items: center; padding: 0 20px; gap: 12px; }
+        .aac-grid { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; height: calc(100vh - 220px); padding: 10px; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 100; }
+    </style>
+</head>
+<body>
+
+    <!-- 1. 登入視圖 -->
+    <div id="loginView" class="view-screen fixed inset-0 flex flex-col items-center justify-center p-4">
+        <h1 class="text-4xl font-black mb-10 text-blue-600">🤖 AAC 溝通板系統</h1>
+        <div class="bg-white p-10 rounded-[40px] shadow-2xl border-4 border-blue-200 w-full max-w-md text-center">
+            <p class="text-gray-500 font-bold mb-8">請選擇帳號</p>
+            <div class="space-y-4">
+                <button id="btnA" onclick="login('user1@test.com', 'password123', 'btnA')" class="w-full bg-blue-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg">使用者 A</button>
+                <button id="btnB" onclick="login('user2@test.com', 'password123', 'btnB')" class="w-full bg-green-500 text-white py-5 rounded-2xl font-black text-xl shadow-lg">使用者 B</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 挑選類別視圖 -->
+    <div id="categoryView" class="view-screen hidden fixed inset-0 flex flex-col items-center p-8 overflow-y-auto">
+        <h1 class="text-5xl font-black mb-12">挑 選 類 別</h1>
+        
+        <div class="flex items-center gap-10 mb-12">
+            <button class="text-6xl text-blue-700">⬅️</button>
+            <div id="categoryGrid" class="flex gap-6"></div>
+            <button class="text-6xl text-blue-700">➡️</button>
+        </div>
+
+        <p class="text-left w-full max-w-6xl font-black text-2xl mb-4">已選類別</p>
+        <div class="w-full max-w-6xl h-32 bg-[#e5e7eb] rounded-[40px] border-4 border-[#6b7280] flex items-center p-4 gap-4 overflow-x-auto relative">
+            <div id="selectedBar" class="flex gap-4"></div>
+            <button onclick="switchView('boardView')" class="absolute right-6 text-6xl text-yellow-500 hover:scale-110 transition-transform">➡️</button>
+        </div>
+    </div>
+
+    <!-- 3. 編輯類別視圖 -->
+    <div id="editCategoryView" class="view-screen hidden fixed inset-0 flex flex-col items-center p-10">
+        <div id="editCatHeader" class="mb-10 text-center"></div>
+        <div id="editCardsGrid" class="grid grid-cols-6 gap-6 max-w-4xl bg-white p-10 rounded-[40px] shadow-xl border-4 border-gray-200"></div>
+        <button onclick="switchView('categoryView')" class="fixed bottom-10 right-10 w-20 h-20 bg-red-500 rounded-full flex items-center justify-center text-4xl text-white shadow-2xl">🏠</button>
+    </div>
+
+    <!-- 4. 主溝通板視圖 -->
+    <div id="boardView" class="view-screen hidden p-4">
+        <div class="flex items-start gap-4 mb-4">
+            <button onclick="analyzeAI()" class="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center border-4 border-blue-400 text-5xl shadow-md">🤖</button>
+            <div class="flex-grow">
+                <div id="sentenceBox" class="sentence-bar"></div>
+                <div id="aiResultArea" class="hidden mt-2 p-3 bg-blue-50 border-2 border-blue-200 rounded-2xl flex items-center gap-3">
+                    <span class="text-blue-600 font-black">AI 建議:</span>
+                    <span id="aiResult" class="font-bold italic"></span>
+                </div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <button onclick="selectedSentence.pop(); renderSentence();" class="w-12 h-12 bg-red-500 text-white rounded-full text-2xl font-black shadow-md">✕</button>
+                <button onclick="window.speak(selectedSentence.map(i=>i.text).join(''))" class="w-12 h-12 bg-orange-400 text-white rounded-full text-2xl shadow-md">📢</button>
+                <button onclick="switchView('categoryView')" class="w-12 h-12 bg-gray-400 text-white rounded-full text-[10px] shadow-md">返回</button>
+            </div>
+        </div>
+        <div id="boardGrid" class="aac-grid"></div>
+    </div>
+
+    <!-- Modals -->
+    <div id="addCatModal" class="modal">
+        <div class="bg-white p-8 rounded-3xl w-96 border-4 border-yellow-400">
+            <h2 class="text-2xl font-black mb-4">新增類別</h2>
+            <input id="newCatName" type="text" placeholder="類別名稱" class="w-full border-2 p-3 mb-4 rounded-xl">
+            <input id="newCatIcon" type="text" placeholder="Emoji 圖示" class="w-full border-2 p-3 mb-4 rounded-xl">
+            <input id="newCatColor" type="color" class="w-full h-12 mb-6" value="#ecfdf5">
+            <div class="flex gap-2">
+                <button onclick="closeModal('addCatModal')" class="flex-1 bg-gray-200 py-3 rounded-xl">取消</button>
+                <button onclick="addCategory()" class="flex-1 bg-yellow-400 py-3 rounded-xl font-bold">新增</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="addCardModal" class="modal">
+        <div class="bg-white p-8 rounded-3xl w-96 border-4 border-yellow-400">
+            <h2 class="text-2xl font-black mb-4">新增字卡</h2>
+            <input id="newCardName" type="text" placeholder="字卡名稱" class="w-full border-2 p-3 mb-4 rounded-xl">
+            <input id="newCardIcon" type="text" placeholder="Emoji 圖示" class="w-full border-2 p-3 mb-4 rounded-xl">
+            <div class="flex gap-2">
+                <button onclick="closeModal('addCardModal')" class="flex-1 bg-gray-200 py-3 rounded-xl">取消</button>
+                <button onclick="addCardToCat()" class="flex-1 bg-yellow-400 py-3 rounded-xl font-bold">新增</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
