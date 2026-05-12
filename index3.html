@@ -1,1 +1,512 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AAC 專業溝通板系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signInAnonymously, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDocs, onSnapshot, query, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Firebase 配置
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "aac-pro-v3";
+
+        // 狀態管理
+        let currentUser = null;
+        let allCategories = [];
+        let selectedCategoryIds = [];
+        let currentEditingCategory = null;
+        let selectedSentence = [];
+        let longPressTimer = null;
+        let editSnapshotUnsubscribe = null;
+        const synth = window.speechSynthesis;
+
+        // 全域功能
+        window.switchView = (viewId) => {
+            document.querySelectorAll('.view-screen').forEach(v => v.classList.add('hidden'));
+            document.getElementById(viewId).classList.remove('hidden');
+            if(viewId === 'categoryView') renderCategories();
+            if(viewId === 'boardView') renderMainBoard();
+        };
+
+        window.speak = (text) => {
+            if (synth.speaking) synth.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = 'zh-TW';
+            u.rate = 1.0;
+            synth.speak(u);
+        };
+
+        // 圖片處理
+        const fileToBase64 = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+
+        // 初始化預設數據 (整合上一版)
+        const initDefaultData = async (uid) => {
+            const defaults = [
+                { name: "情緒", icon: "😊", color: "#ecfdf5", cards: [{text:"開心", icon:"😊"}, {text:"生氣", icon:"😡"}, {text:"難過", icon:"😢"}] },
+                { name: "家人", icon: "👨‍👩‍👧", color: "#eff6ff", cards: [{text:"爸爸", icon:"👨‍🏫"}, {text:"媽媽", icon:"👩"}, {text:"奶奶", icon:"👵"}] },
+                { name: "動作", icon: "🏃", color: "#fff7ed", cards: [{text:"吃", icon:"👦🍱"}, {text:"喝", icon:"🥛"}, {text:"跑", icon:"🏃"}] },
+                { name: "食物", icon: "🍱", color: "#fefce8", cards: [{text:"飯", icon:"🍚"}, {text:"麵", icon:"🍜"}, {text:"餅乾", icon:"🍪"}] }
+            ];
+            
+            try {
+                for (let d of defaults) {
+                    const catRef = doc(collection(db, 'artifacts', appId, 'users', uid, 'categories'));
+                    await setDoc(catRef, { name: d.name, icon: d.icon, color: d.color, id: catRef.id });
+                    for (let c of d.cards) {
+                        const cardRef = doc(collection(db, 'artifacts', appId, 'users', uid, 'categories', catRef.id, 'cards'));
+                        await setDoc(cardRef, { ...c, id: cardRef.id });
+                    }
+                }
+            } catch (e) {
+                console.error("初始化失敗:", e);
+            }
+        };
+
+        // 渲染類別選擇頁 (整合卡片式新增)
+        const renderCategories = () => {
+            const container = document.getElementById('categoryGrid');
+            container.innerHTML = '';
+            
+            allCategories.forEach(cat => {
+                const isSelected = selectedCategoryIds.includes(cat.id);
+                const div = document.createElement('div');
+                div.className = `cat-card relative animate-pop ${isSelected ? 'ring-8 ring-blue-400 scale-105' : ''}`;
+                div.style.backgroundColor = cat.color || '#ffffff';
+                
+                let iconHtml = cat.image ? `<img src="${cat.image}" class="w-24 h-24 object-contain">` : `<div class="text-6xl">${cat.icon || '📁'}</div>`;
+                
+                div.innerHTML = `
+                    <div class="text-2xl font-black mb-4">${cat.name}</div>
+                    ${iconHtml}
+                `;
+                
+                div.onpointerdown = () => {
+                    div.dataset.lp = "false";
+                    longPressTimer = setTimeout(() => {
+                        div.dataset.lp = "true";
+                        openEditCategory(cat);
+                    }, 700);
+                };
+                div.onpointerup = () => {
+                    clearTimeout(longPressTimer);
+                    if(div.dataset.lp !== "true") toggleCategory(cat.id);
+                };
+                container.appendChild(div);
+            });
+
+            // 「新增類別」虛線卡片
+            const addCard = document.createElement('div');
+            addCard.className = "cat-card-add";
+            addCard.innerHTML = `
+                <div class="w-20 h-20 bg-yellow-400 rounded-full flex items-center justify-center text-5xl text-white mb-4 shadow-lg">＋</div>
+                <div class="text-2xl font-black">新增類別</div>
+            `;
+            addCard.onclick = () => document.getElementById('addCategoryModal').style.display = 'flex';
+            container.appendChild(addCard);
+
+            renderSelectedBar();
+        };
+
+        const toggleCategory = (id) => {
+            const idx = selectedCategoryIds.indexOf(id);
+            if(idx > -1) selectedCategoryIds.splice(idx, 1);
+            else selectedCategoryIds.push(id);
+            renderCategories();
+        };
+
+        const renderSelectedBar = () => {
+            const bar = document.getElementById('selectedBar');
+            bar.innerHTML = '';
+            selectedCategoryIds.forEach(id => {
+                const cat = allCategories.find(c => c.id === id);
+                if(!cat) return;
+                const div = document.createElement('div');
+                div.className = "h-20 px-6 bg-white border-4 border-black rounded-3xl flex items-center gap-3 cursor-pointer flex-shrink-0 animate-pop";
+                let iconHtml = cat.image ? `<img src="${cat.image}" class="w-10 h-10 object-contain">` : `<span class="text-2xl">${cat.icon}</span>`;
+                div.innerHTML = `${iconHtml}<span class="font-black text-xl">${cat.name}</span>`;
+                div.onclick = () => toggleCategory(id);
+                bar.appendChild(div);
+            });
+        };
+
+        // 編輯類別內容 (整合卡片式新增字卡)
+        const openEditCategory = async (cat) => {
+            if (!currentUser) return;
+            currentEditingCategory = cat;
+            window.switchView('editCategoryView');
+            document.getElementById('editHeaderLabel').innerText = cat.name;
+            document.getElementById('editHeaderIcon').innerHTML = cat.image ? `<img src="${cat.image}" class="w-24 h-24 object-contain mx-auto">` : `<div class="text-7xl text-center">${cat.icon}</div>`;
+            document.getElementById('editCategoryScreen').style.backgroundColor = (cat.color || '#ffffff') + '15'; 
+
+            if(editSnapshotUnsubscribe) editSnapshotUnsubscribe();
+
+            const q = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', cat.id, 'cards');
+            editSnapshotUnsubscribe = onSnapshot(q, (snap) => {
+                const grid = document.getElementById('editCardsGrid');
+                grid.innerHTML = '';
+                
+                snap.docs.forEach(docSnap => {
+                    const card = docSnap.data();
+                    const div = document.createElement('div');
+                    div.className = "board-card h-56 w-48 animate-pop";
+                    div.style.backgroundColor = cat.color || '#fff';
+                    let iconHtml = card.image ? `<img src="${card.image}" class="w-28 h-28 object-contain">` : `<div class="text-6xl">${card.icon}</div>`;
+                    div.innerHTML = `<div class="text-xl font-black">${card.text}</div>${iconHtml}`;
+                    div.onclick = async () => {
+                        if (confirm(`確定刪除字卡「${card.text}」嗎？`)) await deleteDoc(docSnap.ref);
+                    };
+                    grid.appendChild(div);
+                });
+
+                // 「新增字卡」虛線卡片
+                const addBtn = document.createElement('div');
+                addBtn.className = "cat-card-add h-56 w-48";
+                addBtn.innerHTML = `
+                    <div class="w-16 h-16 bg-yellow-400 rounded-full flex items-center justify-center text-4xl text-white mb-2 shadow-md">＋</div>
+                    <div class="font-black">新增字卡</div>
+                `;
+                addBtn.onclick = () => document.getElementById('addCardModal').style.display = 'flex';
+                grid.appendChild(addBtn);
+            });
+        };
+
+        // 渲染主板
+        const renderMainBoard = async () => {
+            const grid = document.getElementById('boardGrid');
+            grid.innerHTML = '<div class="col-span-10 text-center py-20 font-bold text-gray-400 text-2xl">溝通板排列中...</div>';
+            
+            let board = new Array(40).fill(null);
+            const sys = [
+                {text:"我", icon:"👧"}, {text:"要", icon:"☀️"}, {text:"不要", icon:"😌"},
+                {text:"你", icon:"👦"}, {text:"是", icon:"⭕"}, {text:"不是", icon:"❌"},
+                {text:"他", icon:"🧒"}, {text:"會", icon:"💡"}, {text:"不會", icon:"🤯"},
+                {text:"老師", icon:"👩‍🏫"}, {text:"還要", icon:"☝️"}, {text:"等一下", icon:"🖐️"}
+            ];
+            let sP = 0;
+            for(let r=0; r<4; r++) for(let c=0; c<3; c++) board[r*10+c] = sys[sP++];
+
+            board[9] = { text:"添加", icon:"➕", type:"act", action: () => window.switchView('categoryView') };
+            board[19] = { text:"告狀", icon:"☝️👩‍🏫", type:"act", action: () => window.speak("老師，我要告狀！") };
+            board[29] = { text:"幫忙", icon:"🤝❤️", type:"act", action: () => window.speak("請幫幫我。") };
+            board[39] = { text:"重設", icon:"⚙️", color: "#fce7f3", type:"act", action: () => { selectedSentence = []; renderSentence(); window.speak("重設系統"); } };
+
+            let currentCol = 3; 
+            let currentRow = 0;
+
+            for (let catId of selectedCategoryIds) {
+                if (currentCol >= 9) break;
+                const catInfo = allCategories.find(c => c.id === catId);
+                const q = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', catId, 'cards');
+                const snap = await getDocs(q);
+                const cards = snap.docs.map(d => ({ ...d.data(), color: catInfo.color }));
+
+                cards.forEach(card => {
+                    if (currentCol < 9) {
+                        board[currentRow * 10 + currentCol] = card;
+                        currentRow++;
+                        if (currentRow >= 4) { currentRow = 0; currentCol++; }
+                    }
+                });
+                if (currentRow !== 0) { currentRow = 0; currentCol++; }
+            }
+
+            grid.innerHTML = '';
+            board.forEach(item => {
+                const div = document.createElement('div');
+                div.className = item ? "board-card-main animate-pop" : "board-empty";
+                if(item) {
+                    div.style.backgroundColor = item.color || '#fff';
+                    let iconHtml = item.image ? `<img src="${item.image}" class="w-12 h-12 object-contain">` : `<div class="text-3xl">${item.icon || '❓'}</div>`;
+                    div.innerHTML = `<div class="text-[10px] font-black">${item.text}</div>${iconHtml}`;
+                    div.onclick = () => {
+                        if(item.type === 'act') item.action();
+                        else if(selectedSentence.length < 6) { 
+                            selectedSentence.push(item); 
+                            window.speak(item.text); 
+                            renderSentence(); 
+                        }
+                    };
+                }
+                grid.appendChild(div);
+            });
+        };
+
+        const renderSentence = () => {
+            const box = document.getElementById('sentenceBox');
+            box.innerHTML = '';
+            selectedSentence.forEach(item => {
+                const div = document.createElement('div');
+                div.className = "w-20 h-24 bg-white border-2 border-black rounded-2xl flex flex-col items-center justify-center flex-shrink-0 animate-pop shadow-md";
+                let iconHtml = item.image ? `<img src="${item.image}" class="w-10 h-10 object-contain">` : `<div class="text-2xl">${item.icon}</div>`;
+                div.innerHTML = `${iconHtml}<div class="text-xs font-bold mt-1">${item.text}</div>`;
+                box.appendChild(div);
+            });
+        };
+
+        // AI 語句分析 (Gemini)
+        window.analyzeAI = async () => {
+            if(selectedSentence.length === 0) return;
+            const aiArea = document.getElementById('aiArea');
+            const aiResult = document.getElementById('aiResult');
+            aiArea.classList.remove('hidden');
+            aiResult.innerText = "🤖 AI 分析中...";
+
+            const userText = selectedSentence.map(i => i.text).join('、');
+            const apiKey = ""; // 執行環境自動提供
+            
+            const callGemini = async (retries = 0) => {
+                try {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ parts: [{ text: `使用者輸入詞彙：${userText}` }] }],
+                            systemInstruction: { parts: [{ text: "你是一位輔助溝通專家。請分析詞彙並補足語法。格式：缺少【XX】-->完整句子。限制在20字以內。" }] }
+                        })
+                    });
+                    const data = await response.json();
+                    aiResult.innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || "暫時無法分析語句。";
+                } catch (err) {
+                    if (retries < 5) setTimeout(() => callGemini(retries + 1), Math.pow(2, retries) * 1000);
+                    else aiResult.innerText = "AI 服務暫時不可用。";
+                }
+            };
+            callGemini();
+        };
+
+        // Firebase 儲存邏輯
+        window.saveCategory = async () => {
+            const name = document.getElementById('catName').value;
+            const color = document.getElementById('catColor').value;
+            const emoji = document.getElementById('catEmoji').value;
+            const file = document.getElementById('catFile').files[0];
+            if(!name || !currentUser) return alert("請輸入類別名稱");
+            
+            let imageData = null;
+            if(file) imageData = await fileToBase64(file);
+
+            try {
+                const ref = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories'));
+                await setDoc(ref, { name, color, icon: emoji, image: imageData, id: ref.id });
+                window.closeModal('addCategoryModal');
+            } catch (e) { console.error(e); }
+        };
+
+        window.saveCard = async () => {
+            const text = document.getElementById('cardName').value;
+            const emoji = document.getElementById('cardEmoji').value;
+            const file = document.getElementById('cardFile').files[0];
+            if(!text || !currentUser || !currentEditingCategory) return alert("請輸入字卡名稱");
+
+            let imageData = null;
+            if(file) imageData = await fileToBase64(file);
+
+            try {
+                const ref = doc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'categories', currentEditingCategory.id, 'cards'));
+                await setDoc(ref, { text, icon: emoji, image: imageData, id: ref.id });
+                window.closeModal('addCardModal');
+            } catch (e) { console.error(e); }
+        };
+
+        window.closeModal = (id) => {
+            document.getElementById(id).style.display = 'none';
+            document.querySelectorAll('input').forEach(i => i.value = '');
+        };
+
+        // 登入邏輯
+        const initAuth = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'categories');
+                onSnapshot(q, (snap) => {
+                    allCategories = snap.docs.map(d => ({...d.data(), id: d.id}));
+                    if(allCategories.length === 0) {
+                        initDefaultData(user.uid);
+                    } else {
+                        window.switchView('categoryView');
+                    }
+                }, (err) => console.error(err));
+            } else {
+                window.switchView('loginView');
+            }
+        });
+
+        initAuth();
+    </script>
+    <style>
+        @keyframes pop { 0% { transform: scale(0.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+        .animate-pop { animation: pop 0.2s ease-out; }
+        body { background-color: #fefce8; font-family: 'Microsoft JhengHei', sans-serif; overflow: hidden; height: 100vh; user-select: none; }
+        .view-screen { position: fixed; inset: 0; padding: 40px; display: flex; flex-direction: column; align-items: center; }
+        
+        /* 類別與新增卡片 */
+        .cat-card { width: 230px; height: 290px; border: 6px solid #fff; border-radius: 45px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; box-shadow: 0 12px 0 rgba(0,0,0,0.05); touch-action: none; background: white; }
+        .cat-card-add { width: 230px; height: 290px; border: 6px dashed #000; border-radius: 45px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; background: rgba(255,255,255,0.4); transition: 0.2s; }
+        .cat-card:active, .cat-card-add:active { transform: scale(0.95); }
+
+        /* 主板字卡樣式 */
+        .board-card-main { border: 2px solid #000; border-radius: 20px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 8px; cursor: pointer; box-shadow: 3px 3px 0 #000; transition: 0.1s; background: #fff; }
+        .board-card-main:active { transform: translate(2px, 2px); box-shadow: none; }
+        .board-card { border: 5px solid #fff; border-radius: 35px; display: flex; flex-direction: column; align-items: center; justify-content: space-evenly; padding: 12px; cursor: pointer; box-shadow: 0 8px 0 rgba(0,0,0,0.05); }
+
+        .board-empty { border: 2px dashed #ccc; border-radius: 20px; opacity: 0.15; }
+        .sentence-bar { background-color: #e5e7eb; border: 6px solid #9ca3af; border-radius: 45px; height: 150px; display: flex; align-items: center; padding: 0 25px; gap: 15px; flex-grow: 1; overflow-x: auto; box-shadow: inset 4px 4px 10px rgba(0,0,0,0.1); }
+        .grid-10x4 { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(4, 1fr); gap: 15px; width: 100%; height: calc(100vh - 300px); }
+
+        /* 彈窗 UI */
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .modal-content { background: white; padding: 40px; border-radius: 55px; width: 480px; border: 8px solid #facc15; box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
+
+        .home-btn { position: fixed; bottom: 35px; right: 35px; width: 85px; height: 85px; background: #ef4444; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 25px rgba(239, 68, 68, 0.5); cursor: pointer; color: white; font-size: 45px; z-index: 50; transition: 0.2s; border: 4px solid #fff; }
+        .home-btn:active { transform: scale(0.9); }
+    </style>
+</head>
+<body>
+
+    <!-- 登入頁 -->
+    <div id="loginView" class="view-screen">
+        <h1 class="text-7xl font-black mb-16 text-blue-600 mt-20 drop-shadow-lg">AAC 溝通板</h1>
+        <div class="space-y-6 w-96 text-center">
+            <button onclick="switchView('categoryView')" class="w-full bg-blue-500 text-white py-7 rounded-[40px] font-black text-3xl shadow-2xl hover:bg-blue-600 transition-all active:scale-95">開始對話</button>
+            <p class="text-gray-400 font-bold text-xl mt-4">專業輔助溝通系統</p>
+        </div>
+    </div>
+
+    <!-- 類別挑選頁 (包含上一版預設類別 + 新增卡片) -->
+    <div id="categoryView" class="view-screen hidden">
+        <h2 class="text-5xl font-black mb-14 tracking-widest">挑 選 類 別</h2>
+        <div class="flex items-center gap-8 w-full max-w-7xl">
+            <button class="text-7xl text-blue-800 opacity-20 cursor-default">⬅️</button>
+            <div id="categoryGrid" class="flex-grow flex gap-10 overflow-x-auto py-8 px-6 no-scrollbar"></div>
+            <button class="text-7xl text-blue-800 opacity-20 cursor-default">➡️</button>
+        </div>
+        
+        <div class="w-full max-w-6xl mt-14">
+            <p class="text-2xl font-black mb-4 ml-8">已選擇類別：</p>
+            <div class="w-full h-36 bg-gray-200 rounded-[55px] border-8 border-gray-400 flex items-center p-7 gap-7 relative shadow-inner">
+                <div id="selectedBar" class="flex gap-7 overflow-x-auto"></div>
+                <button onclick="switchView('boardView')" class="absolute -right-8 bg-yellow-400 w-28 h-28 rounded-full flex items-center justify-center text-6xl shadow-2xl border-8 border-white transition-transform hover:scale-110 active:scale-90">➡️</button>
+            </div>
+        </div>
+        <button onclick="signOut(getAuth())" class="mt-8 text-gray-400 font-bold hover:text-red-500">登出帳號</button>
+    </div>
+
+    <!-- 編輯類別內容頁 -->
+    <div id="editCategoryView" class="view-screen hidden" id="editCategoryScreen">
+        <div class="flex flex-col items-center mb-12">
+            <div id="editHeaderIcon" class="mb-4"></div>
+            <h2 id="editHeaderLabel" class="text-5xl font-black">類別名稱</h2>
+        </div>
+        <div class="bg-white/40 p-12 rounded-[70px] border-8 border-white w-full max-w-7xl shadow-2xl flex-grow overflow-y-auto">
+            <div id="editCardsGrid" class="flex flex-wrap justify-center gap-10"></div>
+        </div>
+        <div class="home-btn" onclick="switchView('categoryView')">🏠</div>
+    </div>
+
+    <!-- 主溝通板頁 -->
+    <div id="boardView" class="view-screen hidden">
+        <div class="flex w-full gap-8 mb-8 max-w-[1400px] items-center">
+            <button onclick="analyzeAI()" class="w-32 h-32 bg-blue-100 rounded-full border-4 border-blue-400 text-7xl shadow-xl flex items-center justify-center hover:bg-blue-200 active:scale-90 transition-all">🤖</button>
+            <div class="flex flex-col flex-grow">
+                <div id="sentenceBox" class="sentence-bar"></div>
+                <div id="aiArea" class="hidden mt-3 p-3 bg-blue-50 border-2 border-blue-200 rounded-2xl text-blue-700 font-bold italic animate-pop">
+                    建議：<span id="aiResult"></span>
+                </div>
+            </div>
+            <div class="flex flex-col gap-5">
+                <button onclick="selectedSentence.pop(); renderSentence();" class="w-16 h-16 bg-red-500 text-white rounded-3xl text-4xl font-black flex items-center justify-center shadow-lg active:scale-90">✕</button>
+                <button onclick="window.speak(selectedSentence.map(i=>i.text).join(''))" class="w-16 h-16 bg-orange-400 text-white rounded-3xl text-4xl flex items-center justify-center shadow-lg active:scale-90">📢</button>
+            </div>
+        </div>
+        <div id="boardGrid" class="grid-10x4 px-6 max-w-[1400px]"></div>
+        <div class="home-btn" onclick="switchView('categoryView')">🏠</div>
+    </div>
+
+    <!-- 新增類別彈窗 -->
+    <div id="addCategoryModal" class="modal-overlay">
+        <div class="modal-content">
+            <h2 class="text-4xl font-black mb-10 text-center text-yellow-600">🆕 新增溝通類別</h2>
+            <div class="space-y-7">
+                <div>
+                    <label class="block font-black mb-3 text-xl">類別名稱</label>
+                    <input id="catName" class="w-full p-5 bg-gray-100 rounded-2xl outline-none border-4 border-transparent focus:border-yellow-400 text-lg">
+                </div>
+                <div>
+                    <label class="block font-black mb-3 text-xl">卡片背景色</label>
+                    <input type="color" id="catColor" value="#ffffff" class="w-full h-16 rounded-2xl cursor-pointer">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block font-black mb-3">使用 Emoji</label>
+                        <input id="catEmoji" placeholder="🍎" class="w-full p-4 bg-gray-100 rounded-2xl outline-none border-2">
+                    </div>
+                    <div>
+                        <label class="block font-black mb-3">上傳圖片</label>
+                        <input type="file" id="catFile" accept="image/*" class="w-full text-sm mt-2">
+                    </div>
+                </div>
+                <div class="flex gap-5 pt-6">
+                    <button onclick="closeModal('addCategoryModal')" class="flex-1 py-5 bg-gray-200 rounded-3xl font-black text-xl">取消</button>
+                    <button onclick="saveCategory()" class="flex-1 py-5 bg-yellow-400 text-white rounded-3xl font-black text-xl shadow-lg">確認新增</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增字卡彈窗 -->
+    <div id="addCardModal" class="modal-overlay">
+        <div class="modal-content">
+            <h2 class="text-4xl font-black mb-10 text-center text-blue-600">✨ 新增自訂字卡</h2>
+            <div class="space-y-7">
+                <div>
+                    <label class="block font-black mb-3 text-xl">字卡名稱</label>
+                    <input id="cardName" class="w-full p-5 bg-gray-100 rounded-2xl outline-none border-4 border-transparent focus:border-blue-400 text-lg">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block font-black mb-3">使用 Emoji</label>
+                        <input id="cardEmoji" placeholder="🍎" class="w-full p-4 bg-gray-100 rounded-2xl outline-none border-2">
+                    </div>
+                    <div>
+                        <label class="block font-black mb-3">上傳圖片</label>
+                        <input type="file" id="cardFile" accept="image/*" class="w-full text-sm mt-2">
+                    </div>
+                </div>
+                <div class="flex gap-5 pt-6">
+                    <button onclick="closeModal('addCardModal')" class="flex-1 py-5 bg-gray-200 rounded-3xl font-black text-xl">取消</button>
+                    <button onclick="saveCard()" class="flex-1 py-5 bg-blue-500 text-white rounded-3xl font-black text-xl shadow-lg">確認新增</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
